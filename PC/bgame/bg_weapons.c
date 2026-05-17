@@ -1,0 +1,1 @@
+int bg_iNumWeapons;

@@ -1,0 +1,10 @@
+/* Generated source skeleton from xSYM metadata. */
+#ifndef __UNIMPLEMENTED__
+#define __UNIMPLEMENTED__() do { } while (0)
+#endif
+
+#include "server.h"
+
+/* Original path: /Volumes/BigCheese/ Source/AspyrP4/CoD/Source/server_mp/sv_main_mp.c */
+/* No exact function-to-file mapping was present for this file in the decoded xSYM tables. */
+serverStatic_t	svs;
