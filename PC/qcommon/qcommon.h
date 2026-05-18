@@ -623,4 +623,12 @@ typedef struct cmd_function_s {
 void I_strncpyz(char *dest, const char *src, int destsize);
 #define Q_strncpyz I_strncpyz
 
+extern cvar_t *com_developer;
+void Com_Error_f(void);
+void Com_Crash_f(void);
+void Com_Freeze_f(void);
+void Com_Quit_f(void);
+int Com_Shutdown(void);
+void Sys_Quit(void);
+
 #endif /* QCOMMON_H */

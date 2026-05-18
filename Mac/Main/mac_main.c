@@ -464,3 +464,4 @@ skip_dupe_check:
         RenderDemoFrame();
     }
 }
+

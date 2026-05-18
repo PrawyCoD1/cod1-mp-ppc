@@ -569,6 +569,9 @@ const char *SE_GetString(const char *msg) {
     if (!_stricmp(msg, "@MENU_MODS")) return "Mods";
     if (!_stricmp(msg, "@MENU_SINGLE_PLAYER")) return "Single Player";
     if (!_stricmp(msg, "@MENU_QUIT")) return "Quit";
+    if (!_stricmp(msg, "@MENU_ARE_YOU_SURE_QUIT")) return "Are you sure you want to quit?";
+    if (!_stricmp(msg, "@MENU_YES")) return "Yes";
+    if (!_stricmp(msg, "@MENU_NO")) return "No";
     return msg;
 }
 void *FS_FileForHandle(int h) { return NULL; }
@@ -761,6 +764,30 @@ int dword_8AAB60 = 0;
 int Com_ModifyMsec(int p1) { return p1; }
 void SV_Frame(int p1) {}
 void CL_Shutdown(void) {}
+void CL_ShutdownAll(void) {}
+void *SV_Shutdown(const char *finalmsg) { return NULL; }
+void *Hunk_Clear(void *p) { return NULL; }
+
+cvar_t *com_developer = NULL;
+
+void Com_Error_f(void) {}
+void Com_Crash_f(void) {}
+void Com_Freeze_f(void) {}
+
+int Com_Shutdown(void) {
+    CL_Disconnect();
+    CL_ShutdownAll();
+    void *v3 = SV_Shutdown("Server quit\n");
+    void *v4 = Hunk_Clear(v3);
+    CL_StartHunkUsers();
+    return 1;
+}
+
+void Sys_Quit(void) {
+    CL_Shutdown();
+    exit(0);
+}
+
 int dword_8E58AC = 0;
 int dword_8E58A8 = 0;
 int dword_8E5274 = 0;
@@ -953,6 +980,218 @@ void UpdateConsoleInput(void) {
     }
 }
 
+typedef struct {
+    float menuX, menuY, menuW, menuH;
+    
+    char confirmText[128];
+    float confirmX, confirmY, confirmW, confirmH;
+    int confirmAlign;
+    
+    char yesText[64];
+    float yesX, yesY, yesW, yesH;
+    
+    char noText[64];
+    float noX, noY, noW, noH;
+} quitMenu_t;
+
+static const char *GetNextMenuToken(const char **ptr, char *token, int maxLen) {
+    const char *p = *ptr;
+    while (*p) {
+        // Skip whitespace
+        if (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+            p++;
+            continue;
+        }
+        // Skip block comments /* ... */
+        if (p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (*p && !(p[0] == '*' && p[1] == '/')) {
+                p++;
+            }
+            if (*p) p += 2;
+            continue;
+        }
+        // Skip single-line comments (slash-slash or backslash-backslash)
+        if ((p[0] == '/' && p[1] == '/') || (p[0] == '\\' && p[1] == '\\')) {
+            p += 2;
+            while (*p && *p != '\n' && *p != '\r') {
+                p++;
+            }
+            continue;
+        }
+        break;
+    }
+    
+    if (!*p) {
+        *ptr = p;
+        return NULL;
+    }
+    
+    // Read token
+    int len = 0;
+    if (*p == '"') {
+        // Quoted string
+        p++;
+        while (*p && *p != '"' && len < maxLen - 1) {
+            token[len++] = *p++;
+        }
+        if (*p == '"') p++;
+    } else if (*p == '{' || *p == '}' || *p == '(' || *p == ')') {
+        token[len++] = *p++;
+    } else {
+        // Regular word
+        while (*p && (*p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') && *p != '{' && *p != '}' && *p != '(' && *p != ')' && *p != '"' && len < maxLen - 1) {
+            // Check comment start
+            if ((p[0] == '/' && p[1] == '/') || (p[0] == '\\' && p[1] == '\\') || (p[0] == '/' && p[1] == '*')) {
+                break;
+            }
+            token[len++] = *p++;
+        }
+    }
+    token[len] = '\0';
+    *ptr = p;
+    return token;
+}
+
+static float GetStringWidth(const char *str, float scale) {
+    float w = 0;
+    for (int i = 0; str[i]; i++) {
+        char c = str[i];
+        if (c == ' ' || c == 'i' || c == 'l' || c == 'I' || c == 't' || c == '1' || c == 'j' || c == 'f') {
+            w += 3.5f * scale;
+        } else if (c == 'm' || c == 'w' || c == 'M' || c == 'W') {
+            w += 9.5f * scale;
+        } else if (c >= 'A' && c <= 'Z') {
+            w += 7.5f * scale;
+        } else {
+            w += 5.5f * scale;
+        }
+    }
+    return w;
+}
+
+static void LoadAndParseQuitMenu(quitMenu_t *qm) {
+    // Set default fallback values in case file read fails
+    qm->menuX = 204.0f;
+    qm->menuY = 160.0f;
+    qm->menuW = 235.0f;
+    qm->menuH = 135.0f;
+    
+    strcpy(qm->confirmText, "@MENU_ARE_YOU_SURE_QUIT");
+    qm->confirmX = 126.0f;
+    qm->confirmY = 20.0f;
+    qm->confirmW = 110.0f;
+    qm->confirmH = 20.0f;
+    qm->confirmAlign = 1;
+    
+    strcpy(qm->yesText, "@MENU_YES");
+    qm->yesX = 44.0f;
+    qm->yesY = 60.0f;
+    qm->yesW = 50.0f;
+    qm->yesH = 30.0f;
+    
+    strcpy(qm->noText, "@MENU_NO");
+    qm->noX = 141.0f;
+    qm->noY = 60.0f;
+    qm->noW = 50.0f;
+    qm->noH = 30.0f;
+
+    extern int FS_ReadFile(const char *qpath, void **buffer);
+    void *buffer = NULL;
+    int fileLen = FS_ReadFile("ui/quit.menu", &buffer);
+    if (fileLen <= 0 || !buffer) {
+        Com_Printf("WARNING: LoadAndParseQuitMenu: Could not read ui/quit.menu from PK3/disk. Using defaults.\n");
+        return;
+    }
+
+    const char *ptr = (const char *)buffer;
+    char token[256];
+    
+    int inMenuDef = 0;
+    int inItemDef = 0;
+    char currentItemName[128] = "";
+    
+    char itemText[128] = "";
+    float itemRect[4] = {0};
+    int itemAlign = 0;
+    
+    while (GetNextMenuToken(&ptr, token, sizeof(token))) {
+        if (_stricmp(token, "menuDef") == 0) {
+            inMenuDef = 1;
+            continue;
+        }
+        
+        if (_stricmp(token, "itemDef") == 0) {
+            inItemDef = 1;
+            currentItemName[0] = '\0';
+            itemText[0] = '\0';
+            memset(itemRect, 0, sizeof(itemRect));
+            itemAlign = 0;
+            continue;
+        }
+        
+        if (token[0] == '}') {
+            if (inItemDef) {
+                if (_stricmp(currentItemName, "confirm") == 0) {
+                    if (itemText[0]) strcpy(qm->confirmText, itemText);
+                    qm->confirmX = itemRect[0];
+                    qm->confirmY = itemRect[1];
+                    qm->confirmW = itemRect[2];
+                    qm->confirmH = itemRect[3];
+                    qm->confirmAlign = itemAlign;
+                } else if (_stricmp(currentItemName, "yes") == 0) {
+                    if (itemText[0]) strcpy(qm->yesText, itemText);
+                    qm->yesX = itemRect[0];
+                    qm->yesY = itemRect[1];
+                    qm->yesW = itemRect[2];
+                    qm->yesH = itemRect[3];
+                } else if (_stricmp(currentItemName, "no") == 0) {
+                    if (itemText[0]) strcpy(qm->noText, itemText);
+                    qm->noX = itemRect[0];
+                    qm->noY = itemRect[1];
+                    qm->noW = itemRect[2];
+                    qm->noH = itemRect[3];
+                }
+                inItemDef = 0;
+            } else if (inMenuDef) {
+                inMenuDef = 0;
+            }
+            continue;
+        }
+        
+        if (inItemDef) {
+            if (_stricmp(token, "name") == 0) {
+                GetNextMenuToken(&ptr, currentItemName, sizeof(currentItemName));
+            } else if (_stricmp(token, "text") == 0) {
+                GetNextMenuToken(&ptr, itemText, sizeof(itemText));
+            } else if (_stricmp(token, "rect") == 0) {
+                char val[32];
+                for (int i = 0; i < 4; i++) {
+                    if (GetNextMenuToken(&ptr, val, sizeof(val))) {
+                        itemRect[i] = (float)atof(val);
+                    }
+                }
+            } else if (_stricmp(token, "textalign") == 0) {
+                char val[32];
+                if (GetNextMenuToken(&ptr, val, sizeof(val))) {
+                    itemAlign = atoi(val);
+                }
+            }
+        } else if (inMenuDef) {
+            if (_stricmp(token, "rect") == 0) {
+                char val[32];
+                if (GetNextMenuToken(&ptr, val, sizeof(val))) qm->menuX = (float)atof(val);
+                if (GetNextMenuToken(&ptr, val, sizeof(val))) qm->menuY = (float)atof(val);
+                if (GetNextMenuToken(&ptr, val, sizeof(val))) qm->menuW = (float)atof(val);
+                if (GetNextMenuToken(&ptr, val, sizeof(val))) qm->menuH = (float)atof(val);
+            }
+        }
+    }
+    
+    free(buffer);
+    Com_Printf("DEBUG: Loaded and parsed ui/quit.menu successfully.\n");
+}
+
 void RenderDemoFrame(void) {
     if (!g_hdc) return;
 
@@ -963,15 +1202,19 @@ void RenderDemoFrame(void) {
     static int backBottom = -1;
     static int iwLogo = -1;
     static int initialized = 0;
+    static quitMenu_t g_quitMenu;
 
     if (!initialized) {
         backTop = RE_RegisterShader("ui_mp/assets/main_back_top_mp.tga", 0);
         backBottom = RE_RegisterShader("ui_mp/assets/main_back_bottom_mp.tga", 0);
         iwLogo = RE_RegisterShader("video/iw_logo1.tga", 0);
+        LoadAndParseQuitMenu(&g_quitMenu);
         initialized = 1;
     }
 
-    glViewport(0, 0, 800, 600);
+    RECT clientRect;
+    GetClientRect(hWndParent, &clientRect);
+    glViewport(0, 0, clientRect.right, clientRect.bottom);
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -1004,6 +1247,7 @@ void RenderDemoFrame(void) {
     // Initialize Win32 hardware-accelerated OpenGL Georgia fonts
     static GLuint fontListBase = 0;
     static GLuint verFontListBase = 0;
+    static GLuint popupFontListBase = 0;
     if (!fontListBase) {
         fontListBase = glGenLists(96);
         HFONT hFont = CreateFontA(
@@ -1024,6 +1268,16 @@ void RenderDemoFrame(void) {
         SelectObject(g_hdc, hVerFont);
         wglUseFontBitmaps(g_hdc, 32, 96, verFontListBase);
         DeleteObject(hVerFont);
+
+        popupFontListBase = glGenLists(96);
+        HFONT hPopupFont = CreateFontA(
+            -14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            ANSI_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+            ANTIALIASED_QUALITY, FF_DONTCARE | DEFAULT_PITCH, "Georgia"
+        );
+        SelectObject(g_hdc, hPopupFont);
+        wglUseFontBitmaps(g_hdc, 32, 96, popupFontListBase);
+        DeleteObject(hPopupFont);
     }
 
     // Toggle console on tilde key release
@@ -1100,8 +1354,7 @@ void RenderDemoFrame(void) {
     GetCursorPos(&pt);
     ScreenToClient(hWndParent, &pt);
 
-    RECT clientRect;
-    GetClientRect(hWndParent, &clientRect);
+
     float mouseX = 0;
     float mouseY = 0;
     if (clientRect.right > 0 && clientRect.bottom > 0) {
@@ -1208,8 +1461,23 @@ void RenderDemoFrame(void) {
 
     // Render Quit Confirmation Popup overlay in virtual 640x480 space
     if (showQuitPopup) {
-        int hoveredYes = (mouseX >= 230 && mouseX <= 280 && mouseY >= 225 && mouseY <= 255);
-        int hoveredNo = (mouseX >= 330 && mouseX <= 380 && mouseY >= 225 && mouseY <= 255);
+        float menuX = g_quitMenu.menuX;
+        float menuY = g_quitMenu.menuY;
+        float menuW = g_quitMenu.menuW;
+        float menuH = g_quitMenu.menuH;
+
+        float yesX_abs = menuX + g_quitMenu.yesX;
+        float yesY_abs = menuY + g_quitMenu.yesY;
+        float yesW = g_quitMenu.yesW;
+        float yesH = g_quitMenu.yesH;
+
+        float noX_abs = menuX + g_quitMenu.noX;
+        float noY_abs = menuY + g_quitMenu.noY;
+        float noW = g_quitMenu.noW;
+        float noH = g_quitMenu.noH;
+
+        int hoveredYes = (mouseX >= yesX_abs && mouseX <= yesX_abs + yesW && mouseY >= yesY_abs && mouseY <= yesY_abs + yesH);
+        int hoveredNo = (mouseX >= noX_abs && mouseX <= noX_abs + noW && mouseY >= noY_abs && mouseY <= noY_abs + noH);
         
         if (clickTriggered) {
             extern void Cbuf_AddText(const char *text);
@@ -1227,44 +1495,52 @@ void RenderDemoFrame(void) {
         // 1. Draw popmenu background panel body (below gold bar)
         glColor4f(0.06f, 0.06f, 0.06f, 0.88f);
         glBegin(GL_QUADS);
-            glVertex2f(190, 185);
-            glVertex2f(450, 185);
-            glVertex2f(450, 300);
-            glVertex2f(190, 300);
+            glVertex2f(menuX, menuY + 2);
+            glVertex2f(menuX + menuW, menuY + 2);
+            glVertex2f(menuX + menuW, menuY + menuH);
+            glVertex2f(menuX, menuY + menuH);
         glEnd();
 
         // 2. Draw the golden/olive header strip
+        float headerX = menuX + 2;
+        float headerY = menuY + 3;
+        float headerW = menuW - 4;
+        float headerH = 20;
+
         glColor4f(0.36f, 0.40f, 0.16f, 0.90f);
         glBegin(GL_QUADS);
-            glVertex2f(190, 160);
-            glVertex2f(450, 160);
-            glVertex2f(450, 185);
-            glVertex2f(190, 185);
+            glVertex2f(headerX, headerY);
+            glVertex2f(headerX + headerW, headerY);
+            glVertex2f(headerX + headerW, headerY + headerH);
+            glVertex2f(headerX, headerY + headerH);
         glEnd();
         
         // Complete card outer border
         glColor4f(0.30f, 0.30f, 0.30f, 1.0f);
         glLineWidth(1.5f);
         glBegin(GL_LINE_LOOP);
-            glVertex2f(190, 160);
-            glVertex2f(450, 160);
-            glVertex2f(450, 300);
-            glVertex2f(190, 300);
+            glVertex2f(menuX, menuY);
+            glVertex2f(menuX + menuW, menuY);
+            glVertex2f(menuX + menuW, menuY + menuH);
+            glVertex2f(menuX, menuY + menuH);
         glEnd();
         
         // 3. Render exact prompt text in the header bar
-        if (fontListBase) {
-            glListBase(fontListBase - 32);
-            const char *promptStr = "Are you sure you want to quit?";
+        if (popupFontListBase) {
+            glListBase(popupFontListBase - 32);
+            const char *promptStr = SE_GetString(g_quitMenu.confirmText);
+            float promptW = GetStringWidth(promptStr, 1.0f);
+            float promptX = menuX + 2.0f + ((menuW - 4.0f) / 2.0f) - (promptW / 2.0f);
+            float promptY = menuY + 17.5f; // Perfect vertical alignment inside 20px header strip
             
             // Text shadow
             glColor3f(0.0f, 0.0f, 0.0f);
-            glRasterPos2f(225.0f + 1.0f, 177.0f + 1.0f);
+            glRasterPos2f(promptX + 1.0f, promptY + 1.0f);
             glCallLists(strlen(promptStr), GL_UNSIGNED_BYTE, promptStr);
             
             // Text foreground (soft white)
             glColor3f(0.92f, 0.92f, 0.92f);
-            glRasterPos2f(225.0f, 177.0f);
+            glRasterPos2f(promptX, promptY);
             glCallLists(strlen(promptStr), GL_UNSIGNED_BYTE, promptStr);
         }
         
@@ -1275,25 +1551,34 @@ void RenderDemoFrame(void) {
             glColor4f(0.18f, 0.20f, 0.25f, 0.90f); // Slate charcoal
         }
         glBegin(GL_QUADS);
-            glVertex2f(230, 225);
-            glVertex2f(280, 225);
-            glVertex2f(280, 255);
-            glVertex2f(230, 255);
+            glVertex2f(yesX_abs, yesY_abs);
+            glVertex2f(yesX_abs + yesW, yesY_abs);
+            glVertex2f(yesX_abs + yesW, yesY_abs + yesH);
+            glVertex2f(yesX_abs, yesY_abs + yesH);
         glEnd();
         
-        glColor4f(0.40f, 0.40f, 0.40f, 1.0f);
+        if (hoveredYes) {
+            glColor4f(0.55f, 0.45f, 0.20f, 0.90f);
+        } else {
+            glColor4f(0.25f, 0.27f, 0.30f, 0.80f); // Subtle dark grey border
+        }
+        glLineWidth(1.0f); // Thin, subtle line matching the original game
         glBegin(GL_LINE_LOOP);
-            glVertex2f(230, 225);
-            glVertex2f(280, 225);
-            glVertex2f(280, 255);
-            glVertex2f(230, 255);
+            glVertex2f(yesX_abs, yesY_abs);
+            glVertex2f(yesX_abs + yesW, yesY_abs);
+            glVertex2f(yesX_abs + yesW, yesY_abs + yesH);
+            glVertex2f(yesX_abs, yesY_abs + yesH);
         glEnd();
         
-        if (fontListBase) {
-            glListBase(fontListBase - 32);
-            const char *yesStr = "Yes";
+        if (popupFontListBase) {
+            glListBase(popupFontListBase - 32);
+            const char *yesStr = SE_GetString(g_quitMenu.yesText);
+            float textW = GetStringWidth(yesStr, 1.0f);
+            float textX = yesX_abs + (yesW / 2.0f) - (textW / 2.0f);
+            float textY = yesY_abs + 20.0f; // Perfect vertical alignment for 14px font inside 30px button
+            
             glColor3f(0.0f, 0.0f, 0.0f);
-            glRasterPos2f(243.0f + 1.0f, 246.0f + 1.0f);
+            glRasterPos2f(textX + 1.0f, textY + 1.0f);
             glCallLists(strlen(yesStr), GL_UNSIGNED_BYTE, yesStr);
             
             if (hoveredYes) {
@@ -1301,7 +1586,7 @@ void RenderDemoFrame(void) {
             } else {
                 glColor3f(0.85f, 0.85f, 0.85f);
             }
-            glRasterPos2f(243.0f, 246.0f);
+            glRasterPos2f(textX, textY);
             glCallLists(strlen(yesStr), GL_UNSIGNED_BYTE, yesStr);
         }
         
@@ -1312,25 +1597,34 @@ void RenderDemoFrame(void) {
             glColor4f(0.18f, 0.20f, 0.25f, 0.90f);
         }
         glBegin(GL_QUADS);
-            glVertex2f(330, 225);
-            glVertex2f(380, 225);
-            glVertex2f(380, 255);
-            glVertex2f(330, 255);
+            glVertex2f(noX_abs, noY_abs);
+            glVertex2f(noX_abs + noW, noY_abs);
+            glVertex2f(noX_abs + noW, noY_abs + noH);
+            glVertex2f(noX_abs, noY_abs + noH);
         glEnd();
         
-        glColor4f(0.40f, 0.40f, 0.40f, 1.0f);
+        if (hoveredNo) {
+            glColor4f(0.55f, 0.45f, 0.20f, 0.90f);
+        } else {
+            glColor4f(0.25f, 0.27f, 0.30f, 0.80f);
+        }
+        glLineWidth(1.0f);
         glBegin(GL_LINE_LOOP);
-            glVertex2f(330, 225);
-            glVertex2f(380, 225);
-            glVertex2f(380, 255);
-            glVertex2f(330, 255);
+            glVertex2f(noX_abs, noY_abs);
+            glVertex2f(noX_abs + noW, noY_abs);
+            glVertex2f(noX_abs + noW, noY_abs + noH);
+            glVertex2f(noX_abs, noY_abs + noH);
         glEnd();
         
-        if (fontListBase) {
-            glListBase(fontListBase - 32);
-            const char *noStr = "No";
+        if (popupFontListBase) {
+            glListBase(popupFontListBase - 32);
+            const char *noStr = SE_GetString(g_quitMenu.noText);
+            float textW = GetStringWidth(noStr, 1.0f);
+            float textX = noX_abs + (noW / 2.0f) - (textW / 2.0f);
+            float textY = noY_abs + 20.0f;
+            
             glColor3f(0.0f, 0.0f, 0.0f);
-            glRasterPos2f(347.0f + 1.0f, 246.0f + 1.0f);
+            glRasterPos2f(textX + 1.0f, textY + 1.0f);
             glCallLists(strlen(noStr), GL_UNSIGNED_BYTE, noStr);
             
             if (hoveredNo) {
@@ -1338,7 +1632,7 @@ void RenderDemoFrame(void) {
             } else {
                 glColor3f(0.85f, 0.85f, 0.85f);
             }
-            glRasterPos2f(347.0f, 246.0f);
+            glRasterPos2f(textX, textY);
             glCallLists(strlen(noStr), GL_UNSIGNED_BYTE, noStr);
         }
     }

@@ -90,6 +90,26 @@ void Com_PrintMessage(print_msg_type_t type, const char *msg)
         FS_Flush(logfile);
     }
 }
+
+/*
+=============
+Com_Quit_f
+
+Both client and server can use this, and it will
+do the apropriate things.
+=============
+*/
+void Com_Quit_f( void ) {
+	// don't try to shutdown if we are in a recursive error
+	if ( !com_errorEntered ) {
+		SV_Shutdown ("Server quit\n");
+		CL_Shutdown ();
+		Com_Shutdown ();
+		//FS_Shutdown(qtrue); //todo
+	}
+	Sys_Quit ();
+}
+
 #include <setjmp.h>
 cvar_t* com_recommendedSet;
 cvar_t* com_dedicated;
@@ -201,6 +221,16 @@ void Com_Init(char *commandLine){
 
     if (com_dedicated->integer && !com_viewlog->integer )
         Cvar_Set("com_viewlog", "0");
+
+    if ( com_developer && com_developer->integer ) {
+		Cmd_AddCommand ("error", Com_Error_f);
+		Cmd_AddCommand ("crash", Com_Crash_f );
+		Cmd_AddCommand ("freeze", Com_Freeze_f);
+	}
+
+    Cmd_AddCommand ("quit", Com_Quit_f);
+
+    //TODO
 }
 static int timeStamp = 1;
 void Com_ResetSkeletonCache(void)
