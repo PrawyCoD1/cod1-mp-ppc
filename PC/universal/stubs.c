@@ -26,9 +26,7 @@ void CL_InitKeyCommands(void) {}
 void Com_InitJournaling(void) {}
 
 // Authentic FS_InitFilesystem helper stubs
-void SEH_InitLanguage(void) {}
 void FS_Startup(const char *path) {}
-void SEH_Init_StringEd(int *val, int val2) {}
 void FS_SetRestrictions(void) {}
 
 #pragma pack(push, 1)
@@ -419,11 +417,43 @@ int FS_ReadFile(const char *qpath, void **buffer) {
         "pak6.pk3", "pak8.pk3", "pak9.pk3", "paka.pk3", "pakb.pk3"
     };
 
+    extern cvar_t *fs_basepath;
+    Com_Printf("DEBUG: FS_ReadFile basepath cvar exists: %s\n", fs_basepath ? "YES" : "NO");
+    if (fs_basepath) {
+        Com_Printf("DEBUG: FS_ReadFile basepath string: '%s'\n", fs_basepath->string ? fs_basepath->string : "NULL");
+    }
+
     for (int p = 0; p < 16; p++) {
         char pk3Path[512];
-        sprintf(pk3Path, "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Call of Duty\\main\\%s", pk3Names[p]);
-        FILE *pf = fopen(pk3Path, "rb");
-        if (!pf) continue;
+        FILE *pf = NULL;
+        
+        // 1. Try fs_basepath path
+        if (fs_basepath && fs_basepath->string && fs_basepath->string[0]) {
+            sprintf(pk3Path, "%s/main/%s", fs_basepath->string, pk3Names[p]);
+            for (int i = 0; pk3Path[i]; i++) {
+                if (pk3Path[i] == '/') pk3Path[i] = '\\';
+            }
+            pf = fopen(pk3Path, "rb");
+            if (pf) {
+                Com_Printf("DEBUG: FS_ReadFile opened PK3 at basepath: %s\n", pk3Path);
+            }
+        }
+        
+        // 2. Try relative path if not opened
+        if (!pf) {
+            sprintf(pk3Path, "main/%s", pk3Names[p]);
+            for (int i = 0; pk3Path[i]; i++) {
+                if (pk3Path[i] == '/') pk3Path[i] = '\\';
+            }
+            pf = fopen(pk3Path, "rb");
+            if (pf) {
+                Com_Printf("DEBUG: FS_ReadFile opened PK3 at relative path: %s\n", pk3Path);
+            }
+        }
+        
+        if (!pf) {
+            continue;
+        }
 
         while (1) {
             localHeader_t header;
@@ -558,22 +588,6 @@ void SV_ClearServer(void) {}
 void SV_FreeClients(void) {}
 void SV_FreeArchivedSnapshot(void) {}
 void CL_Disconnect(void) {}
-const char *SE_GetString(const char *msg) {
-    if (!msg) return "";
-    if (!_stricmp(msg, "@MENU_BACKTOGAME")) return "Back to Game";
-    if (!_stricmp(msg, "@MENU_JOIN_GAME")) return "Join Game";
-    if (!_stricmp(msg, "@MENU_DISCONNECT")) return "Disconnect";
-    if (!_stricmp(msg, "@MENU_START_NEW_SERVER")) return "Start New Server";
-    if (!_stricmp(msg, "@MENU_MULTIPLAYER_OPTIONS")) return "Multiplayer Options";
-    if (!_stricmp(msg, "@MENU_OPTIONS")) return "Options";
-    if (!_stricmp(msg, "@MENU_MODS")) return "Mods";
-    if (!_stricmp(msg, "@MENU_SINGLE_PLAYER")) return "Single Player";
-    if (!_stricmp(msg, "@MENU_QUIT")) return "Quit";
-    if (!_stricmp(msg, "@MENU_ARE_YOU_SURE_QUIT")) return "Are you sure you want to quit?";
-    if (!_stricmp(msg, "@MENU_YES")) return "Yes";
-    if (!_stricmp(msg, "@MENU_NO")) return "No";
-    return msg;
-}
 void *FS_FileForHandle(int h) { return NULL; }
 void Sys_EndStreamedFile(void) {}
 const char *Sys_DefaultCDPath(void) { return "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Call of Duty"; }
@@ -584,7 +598,6 @@ void FS_Printf(int h, const char *fmt, ...) {}
 int Com_Filter(const char *filter, const char *name, int casesensitive) { return 0; }
 void Info_SetValueForKey(char *s, const char *key, const char *value) {}
 void Info_SetValueForKey_Big(char *s, const char *key, const char *value) {}
-void SEH_UpdateLanguageInfo(void) {}
 
 #include <setjmp.h>
 #include <windows.h>
@@ -787,6 +800,8 @@ void Sys_Quit(void) {
     CL_Shutdown();
     exit(0);
 }
+
+scrVarPub_t scrVarPub;
 
 int dword_8E58AC = 0;
 int dword_8E58A8 = 0;
@@ -1528,7 +1543,7 @@ void RenderDemoFrame(void) {
         // 3. Render exact prompt text in the header bar
         if (popupFontListBase) {
             glListBase(popupFontListBase - 32);
-            const char *promptStr = SE_GetString(g_quitMenu.confirmText);
+            const char *promptStr = SE_GetString(g_quitMenu.confirmText, 1);
             float promptW = GetStringWidth(promptStr, 1.0f);
             float promptX = menuX + 2.0f + ((menuW - 4.0f) / 2.0f) - (promptW / 2.0f);
             float promptY = menuY + 17.5f; // Perfect vertical alignment inside 20px header strip
@@ -1572,7 +1587,7 @@ void RenderDemoFrame(void) {
         
         if (popupFontListBase) {
             glListBase(popupFontListBase - 32);
-            const char *yesStr = SE_GetString(g_quitMenu.yesText);
+            const char *yesStr = SE_GetString(g_quitMenu.yesText, 1);
             float textW = GetStringWidth(yesStr, 1.0f);
             float textX = yesX_abs + (yesW / 2.0f) - (textW / 2.0f);
             float textY = yesY_abs + 20.0f; // Perfect vertical alignment for 14px font inside 30px button
@@ -1618,7 +1633,7 @@ void RenderDemoFrame(void) {
         
         if (popupFontListBase) {
             glListBase(popupFontListBase - 32);
-            const char *noStr = SE_GetString(g_quitMenu.noText);
+            const char *noStr = SE_GetString(g_quitMenu.noText, 1);
             float textW = GetStringWidth(noStr, 1.0f);
             float textX = noX_abs + (noW / 2.0f) - (textW / 2.0f);
             float textY = noY_abs + 20.0f;

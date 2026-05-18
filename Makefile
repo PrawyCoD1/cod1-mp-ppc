@@ -93,23 +93,27 @@ rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(
 SRC_DIRS := PC Mac/Main
 ROOT_C_SRCS := $(wildcard *.c)
 
-# Find all C and assembly sources under source directories
+# Find all C, C++, and assembly sources under source directories
 ALL_C_SRCS := $(foreach dir,$(SRC_DIRS),$(call rwildcard,$(dir),*.c))
+ALL_CPP_SRCS := $(foreach dir,$(SRC_DIRS),$(call rwildcard,$(dir),*.cpp))
 ALL_S_SRCS := $(foreach dir,$(SRC_DIRS),$(call rwildcard,$(dir),*.S))
 
 # Exclude Mac-only sources (inside PC/mac)
 C_SRCS := $(sort $(filter-out PC/mac/%,$(ALL_C_SRCS)) $(ROOT_C_SRCS))
+CPP_SRCS := $(sort $(filter-out PC/mac/%,$(ALL_CPP_SRCS)))
 S_SRCS := $(sort $(filter-out PC/mac/%,$(ALL_S_SRCS)))
 
-OBJS := $(C_SRCS:.c=.o) $(S_SRCS:.S=.o)
+OBJS := $(C_SRCS:.c=.o) $(CPP_SRCS:.cpp=.o) $(S_SRCS:.S=.o)
 COMPILER_STAMP := .compiler-$(notdir $(CC)).stamp
+
+CXXFLAGS ?= -std=c++11 -m32 -w -O0 -g -fno-omit-frame-pointer -fno-pie -no-pie -I.
 
 .PHONY: all clean list count
 
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS) -Wl,--allow-multiple-definition
+	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS) -lstdc++ -Wl,--allow-multiple-definition
 
 $(COMPILER_STAMP):
 	@rm -f .compiler-*.stamp
@@ -117,6 +121,9 @@ $(COMPILER_STAMP):
 
 %.o: %.c $(COMPILER_STAMP)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+%.o: %.cpp $(COMPILER_STAMP)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
 
 %.o: %.S $(COMPILER_STAMP)
 	$(CC) -m32 -c -o $@ $<

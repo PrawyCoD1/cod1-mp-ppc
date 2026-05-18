@@ -72,11 +72,7 @@ static qboolean SEH_StringEd_SetLanguageStrings(int iLanguage) {
         return 0;
     }
 
-    /* SE_LoadLanguage is an unresolved Mach-O symbol in this build (the
-     * StringEd back-end has not been ported yet). Calling it would
-     * NULL-call. If the language's assets are present we can safely
-     * report success; the engine will fall back to passing string keys
-     * through unchanged at lookup time. */
+    SE_LoadLanguage(g_languages[iLanguage].pszName, 0);
     return 1;
 }
 
@@ -202,7 +198,7 @@ const char * SEH_LocalizeTextMessage(const char *pszInputBuffer, const char *psz
                 pszTranslated = NULL;
                 if (loc_translate && loc_translate->integer &&
                     szTokenBuf[0] != '\0' && szTokenBuf[1] != '\0') {
-                    pszTranslated = SE_GetString(szTokenBuf);
+                    pszTranslated = SE_GetString(szTokenBuf, 1);
                 }
 
                 if (!pszTranslated) {
@@ -343,4 +339,16 @@ const char * SEH_LocalizeTextMessage(const char *pszInputBuffer, const char *psz
     }
 
     return pszString;
+}
+
+void SEH_Init_StringEd(int *val, int val2) {
+    SE_Init();
+}
+
+void SEH_Shutdown_StringEd(void) {
+    SE_ShutDown();
+}
+
+void SEH_InitLanguage(void) {
+    SEH_UpdateLanguageInfo();
 }

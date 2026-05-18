@@ -149,6 +149,12 @@ extern cvar_t *Cvar_Set2( const char *var_name, const char *value, qboolean forc
 void Cmd_ExecuteString(const char *text) {
     if (!text || !text[0]) return;
     
+    // Skip leading slash (common in console commands)
+    if (text[0] == '/') {
+        text++;
+    }
+    if (!text[0]) return;
+    
     Cmd_TokenizeString(text);
     if (cmd_argc == 0) return;
     

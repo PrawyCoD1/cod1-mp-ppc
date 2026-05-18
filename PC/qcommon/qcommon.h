@@ -631,4 +631,16 @@ void Com_Quit_f(void);
 int Com_Shutdown(void);
 void Sys_Quit(void);
 
+extern int se_localized;
+const char *SE_GetString(const char *reference, qboolean wantTranslation);
+void SE_LoadLanguage(const char *languageName, int force);
+void SE_Load(const char *qpath, int force);
+void SE_Init(void);
+void SE_ShutDown(void);
+
+void SEH_Init_StringEd(int *val, int val2);
+void SEH_Shutdown_StringEd(void);
+void SEH_InitLanguage(void);
+int SEH_UpdateLanguageInfo(void);
+
 #endif /* QCOMMON_H */
