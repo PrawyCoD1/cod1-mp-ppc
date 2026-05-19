@@ -1,4 +1,5 @@
 #include "../qcommon/qcommon.h"
+#include <windows.h>
 #include <stddef.h>
 #include <stdarg.h>
 #include <math.h>
@@ -379,21 +380,18 @@ static int puff(unsigned char *dest, unsigned long *destlen, const unsigned char
     return err;
 }
 
-int FS_ReadFile(const char *qpath, void **buffer) {
-    Com_Printf("DEBUG: FS_ReadFile entering for qpath: %s (buffer is %s)\n", qpath, buffer ? "NOT NULL" : "NULL");
+int FS_ReadFile_Internal(const char *qpath, void **buffer) {
     char ospath[512];
     sprintf(ospath, "main/%s", qpath);
     for (int i = 0; ospath[i]; i++) {
         if (ospath[i] == '/') ospath[i] = '\\';
     }
     
-    Com_Printf("DEBUG: FS_ReadFile checking disk ospath: %s\n", ospath);
     FILE *f = fopen(ospath, "rb");
     if (!f) {
         f = fopen(qpath, "rb");
     }
     if (f) {
-        Com_Printf("DEBUG: FS_ReadFile found on disk!\n");
         fseek(f, 0, SEEK_END);
         long len = ftell(f);
         fseek(f, 0, SEEK_SET);
@@ -405,25 +403,77 @@ int FS_ReadFile(const char *qpath, void **buffer) {
         fclose(f);
         if (buffer) *buffer = buf;
         else free(buf);
-        Com_Printf("DEBUG: FS_ReadFile returning disk len %d\n", len);
         return len;
     }
 
-    Com_Printf("DEBUG: FS_ReadFile searching PK3s...\n");
-    const char *pk3Names[] = {
-        "localized_english_pak0.pk3", "localized_english_pak1.pk3", "localized_english_pak2.pk3",
-        "localized_english_pak3.pk3", "localized_english_pak5.pk3",
-        "pak0.pk3", "pak1.pk3", "pak2.pk3", "pak3.pk3", "pak4.pk3", "pak5.pk3",
-        "pak6.pk3", "pak8.pk3", "pak9.pk3", "paka.pk3", "pakb.pk3"
-    };
+    static char pk3Names[128][128];
+    static int numPk3s = 0;
+    static qboolean pk3sScanned = qfalse;
 
     extern cvar_t *fs_basepath;
-    Com_Printf("DEBUG: FS_ReadFile basepath cvar exists: %s\n", fs_basepath ? "YES" : "NO");
-    if (fs_basepath) {
-        Com_Printf("DEBUG: FS_ReadFile basepath string: '%s'\n", fs_basepath->string ? fs_basepath->string : "NULL");
+    
+    if (!pk3sScanned) {
+        pk3sScanned = qtrue;
+        
+        // We will scan twice: first for localized PK3s, then for normal PK3s.
+        // This ensures localized files are searched first and override base assets!
+        for (int pass = 0; pass < 2; pass++) {
+            // Check basepath first
+            if (fs_basepath && fs_basepath->string && fs_basepath->string[0]) {
+                char searchPath[512];
+                sprintf(searchPath, "%s/main/*.pk3", fs_basepath->string);
+                for (int i = 0; searchPath[i]; i++) {
+                    if (searchPath[i] == '/') searchPath[i] = '\\';
+                }
+                WIN32_FIND_DATAA findData;
+                HANDLE hFind = FindFirstFileA(searchPath, &findData);
+                if (hFind != INVALID_HANDLE_VALUE) {
+                    do {
+                        qboolean isLocalized = (_strnicmp(findData.cFileName, "localized_", 10) == 0);
+                        if ((pass == 0 && isLocalized) || (pass == 1 && !isLocalized)) {
+                            qboolean dup = qfalse;
+                            for (int j = 0; j < numPk3s; j++) {
+                                if (_stricmp(pk3Names[j], findData.cFileName) == 0) {
+                                    dup = qtrue;
+                                    break;
+                                }
+                            }
+                            if (!dup && numPk3s < 128) {
+                                strcpy(pk3Names[numPk3s], findData.cFileName);
+                                numPk3s++;
+                            }
+                        }
+                    } while (FindNextFileA(hFind, &findData));
+                    FindClose(hFind);
+                }
+            }
+
+            // Check relative path
+            WIN32_FIND_DATAA findData;
+            HANDLE hFind = FindFirstFileA("main\\*.pk3", &findData);
+            if (hFind != INVALID_HANDLE_VALUE) {
+                do {
+                    qboolean isLocalized = (_strnicmp(findData.cFileName, "localized_", 10) == 0);
+                    if ((pass == 0 && isLocalized) || (pass == 1 && !isLocalized)) {
+                        qboolean dup = qfalse;
+                        for (int j = 0; j < numPk3s; j++) {
+                            if (_stricmp(pk3Names[j], findData.cFileName) == 0) {
+                                dup = qtrue;
+                                break;
+                            }
+                        }
+                        if (!dup && numPk3s < 128) {
+                            strcpy(pk3Names[numPk3s], findData.cFileName);
+                            numPk3s++;
+                        }
+                    }
+                } while (FindNextFileA(hFind, &findData));
+                FindClose(hFind);
+            }
+        }
     }
 
-    for (int p = 0; p < 16; p++) {
+    for (int p = 0; p < numPk3s; p++) {
         char pk3Path[512];
         FILE *pf = NULL;
         
@@ -434,9 +484,6 @@ int FS_ReadFile(const char *qpath, void **buffer) {
                 if (pk3Path[i] == '/') pk3Path[i] = '\\';
             }
             pf = fopen(pk3Path, "rb");
-            if (pf) {
-                Com_Printf("DEBUG: FS_ReadFile opened PK3 at basepath: %s\n", pk3Path);
-            }
         }
         
         // 2. Try relative path if not opened
@@ -446,9 +493,6 @@ int FS_ReadFile(const char *qpath, void **buffer) {
                 if (pk3Path[i] == '/') pk3Path[i] = '\\';
             }
             pf = fopen(pk3Path, "rb");
-            if (pf) {
-                Com_Printf("DEBUG: FS_ReadFile opened PK3 at relative path: %s\n", pk3Path);
-            }
         }
         
         if (!pf) {
@@ -484,7 +528,6 @@ int FS_ReadFile(const char *qpath, void **buffer) {
             }
 
             if (_stricmp(normFilename, normQpath) == 0) {
-                Com_Printf("DEBUG:   Found file in PK3: %s (PK3: %s)\n", normFilename, pk3Names[p]);
                 void *compBuf = malloc(header.compressedSize);
                 if (!compBuf) {
                     fclose(pf);
@@ -494,7 +537,6 @@ int FS_ReadFile(const char *qpath, void **buffer) {
                 fread(compBuf, 1, header.compressedSize, pf);
 
                 if (header.compression == 0) {
-                    Com_Printf("DEBUG:   Compression: Store (uncompressed size: %d)\n", header.uncompressedSize);
                     fclose(pf);
                     if (buffer) {
                         *buffer = compBuf;
@@ -503,7 +545,6 @@ int FS_ReadFile(const char *qpath, void **buffer) {
                     }
                     return header.uncompressedSize;
                 } else if (header.compression == 8) {
-                    Com_Printf("DEBUG:   Compression: Deflate (compressed: %d, uncompressed: %d)\n", header.compressedSize, header.uncompressedSize);
                     void *decompBuf = malloc(header.uncompressedSize + 1);
                     if (!decompBuf) {
                         free(compBuf);
@@ -515,9 +556,7 @@ int FS_ReadFile(const char *qpath, void **buffer) {
                     unsigned long decompLen = header.uncompressedSize;
                     unsigned long compLen = header.compressedSize;
                     
-                    Com_Printf("DEBUG:   Invoking zlib raw inflate...\n");
                     int err = inflate_raw((unsigned char *)decompBuf, &decompLen, (const unsigned char *)compBuf, compLen);
-                    Com_Printf("DEBUG:   inflate_raw returned: %d (bytes decoded: %d)\n", err, decompLen);
                     if (err != 0) {
                         free(decompBuf);
                         free(compBuf);
@@ -544,9 +583,49 @@ int FS_ReadFile(const char *qpath, void **buffer) {
         fclose(pf);
     }
 
-    Com_Printf("DEBUG: FS_ReadFile did NOT find file: %s\n", qpath);
     if (buffer) *buffer = NULL;
     return -1;
+}
+
+int FS_ReadFile_Internal(const char *qpath, void **buffer);
+
+int FS_ReadFile(const char *qpath, void **buffer) {
+    Com_Printf("DEBUG: FS_ReadFile called for: '%s'\n", qpath ? qpath : "NULL");
+    char rewrittenPath[512];
+    const char *finalPath = qpath;
+    
+    // Check if we need to load a localized language font
+    extern int Cvar_VariableIntegerValue(const char *var_name);
+    int lang = Cvar_VariableIntegerValue("cl_language");
+    const char *langSubfolder = NULL;
+    if (lang == 6) langSubfolder = "russian";
+    else if (lang == 7) langSubfolder = "polish";
+    else if (lang == 8) langSubfolder = "korean";
+    else if (lang == 9) langSubfolder = "taiwanese";
+    else if (lang == 10) langSubfolder = "japanese";
+    else if (lang == 11) langSubfolder = "chinese";
+    else if (lang == 12) langSubfolder = "thai";
+
+    if (qpath && !_strnicmp(qpath, "font", 4)) {
+        Com_Printf("DEBUG: FS_ReadFile intercepted font path: '%s'\n", qpath);
+    }
+
+    if (langSubfolder && qpath && !_strnicmp(qpath, "fonts", 5) && (qpath[5] == '/' || qpath[5] == '\\')) {
+        int folderLen = strlen(langSubfolder);
+        const char *subPath = qpath + 6;
+        if (_strnicmp(subPath, langSubfolder, folderLen) != 0 || (subPath[folderLen] != '/' && subPath[folderLen] != '\\')) {
+            sprintf(rewrittenPath, "fonts/%s/%s", langSubfolder, subPath);
+            finalPath = rewrittenPath;
+            Com_Printf("DEBUG: FS_ReadFile redirecting font path from '%s' to '%s'\n", qpath, finalPath);
+        }
+    }
+
+    int result = FS_ReadFile_Internal(finalPath, buffer);
+    if (result <= 0 && finalPath != qpath) {
+        Com_Printf("WARNING: Redirected font path '%s' not found, falling back to original '%s'\n", finalPath, qpath);
+        result = FS_ReadFile_Internal(qpath, buffer);
+    }
+    return result;
 }
 
 // Authentic R_Init helper stubs
@@ -588,19 +667,67 @@ void SV_ClearServer(void) {}
 void SV_FreeClients(void) {}
 void SV_FreeArchivedSnapshot(void) {}
 void CL_Disconnect(void) {}
-void *FS_FileForHandle(int h) { return NULL; }
+void *FS_FileForHandle(int h) {
+    if (h < 1 || h >= MAX_FILE_HANDLES) {
+        return NULL;
+    }
+    return fsh[h].handleFiles.file.o;
+}
 void Sys_EndStreamedFile(void) {}
 const char *Sys_DefaultCDPath(void) { return "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Call of Duty"; }
 const char *Sys_DefaultInstallPath(void) { return "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Call of Duty"; }
-const char *Sys_DefaultHomePath(void) { return "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Call of Duty"; }
-void FS_CreatePath(const char *path) {}
-void FS_Printf(int h, const char *fmt, ...) {}
+const char *Sys_DefaultHomePath(void) { return "."; }
+#include <direct.h>
+#define PATH_SEP '\\'
+
+void Sys_Mkdir(const char *path) {
+    _mkdir(path);
+}
+
+qboolean FS_CreatePath(const char *path) {
+    char pathCopy[512];
+    char *ofs;
+
+    if (strlen(path) >= sizeof(pathCopy)) {
+        return qtrue;
+    }
+    strcpy(pathCopy, path);
+
+    // make absolutely sure that it can't back up the path
+    if (strstr(pathCopy, "..") || strstr(pathCopy, "::")) {
+        Com_Printf("WARNING: refusing to create relative path \"%s\"\n", pathCopy);
+        return qtrue;
+    }
+
+    for (ofs = pathCopy + 1; *ofs; ofs++) {
+        if (*ofs == PATH_SEP) {
+            // create the directory
+            *ofs = 0;
+            Sys_Mkdir(pathCopy);
+            *ofs = PATH_SEP;
+        }
+    }
+    return qfalse;
+}
+void FS_Printf(int h, const char *fmt, ...) {
+    va_list argptr;
+    char buffer[4096];
+    FILE *f;
+
+    f = (FILE *)FS_FileForHandle(h);
+    if (!f) return;
+
+    va_start(argptr, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, argptr);
+    va_end(argptr);
+
+    fwrite(buffer, 1, strlen(buffer), f);
+}
 int Com_Filter(const char *filter, const char *name, int casesensitive) { return 0; }
 void Info_SetValueForKey(char *s, const char *key, const char *value) {}
 void Info_SetValueForKey_Big(char *s, const char *key, const char *value) {}
 
 #include <setjmp.h>
-#include <windows.h>
 
 // Globals and stubs for decompiled OpenGL/input/frame engine
 int vidWidth = 0;
@@ -797,7 +924,11 @@ int Com_Shutdown(void) {
 }
 
 void Sys_Quit(void) {
+    extern void Com_WriteConfigToFile(void);
+    Com_WriteConfigToFile();
     CL_Shutdown();
+    Com_Printf("DEBUG: Sys_Quit pausing for 10 seconds so you can read the console...\n");
+    Sleep(10000);
     exit(0);
 }
 
@@ -815,7 +946,20 @@ char dword_163B400[1024] = {0};
 int dword_163B3CC = 0;
 int dword_163B3D0 = 0;
 int dword_163A238 = 0;
-void Com_WriteConfigToFile(void) {}
+void Com_WriteConfigToFile(void) {
+    fileHandle_t f;
+
+    f = FS_FOpenTextFileWrite("config_mp.cfg");
+    if (!f) {
+        Com_Printf("Couldn't open config_mp.cfg\n");
+        return;
+    }
+    
+    Com_Printf("Writing config_mp.cfg...\n");
+    FS_Printf(f, "// generated by CoD, do not modify\n");
+    Cvar_WriteVariables(f);
+    FS_FCloseFile(f);
+}
 void CL_Frame(int p1) {}
 
 int GLW_CheckOSVersion(void) { return 1; }
@@ -1207,6 +1351,196 @@ static void LoadAndParseQuitMenu(quitMenu_t *qm) {
     Com_Printf("DEBUG: Loaded and parsed ui/quit.menu successfully.\n");
 }
 
+#define GLYPH_START 0
+#define GLYPH_END 255
+#define GLYPHS_PER_FONT (GLYPH_END - GLYPH_START + 1)
+
+typedef struct {
+	int height;     // number of scan lines
+	int top;        // top of glyph in buffer
+	int bottom;     // bottom of glyph in buffer
+	int pitch;      // width for copying
+	int xSkip;      // x adjustment
+	int imageWidth; // width of actual image
+	int imageHeight; // height of actual image
+	float s;        // x offset in image where glyph starts
+	float t;        // y offset in image where glyph starts
+	float s2;
+	float t2;
+	int glyph; // handle to the shader with the glyph
+	char shaderName[32];
+} stub_glyphInfo_t;
+
+typedef struct {
+	stub_glyphInfo_t glyphs [GLYPHS_PER_FONT];
+	float glyphScale;
+	char name[68];
+} stub_fontInfo_t;
+
+typedef struct {
+    float menuX, menuY, menuW, menuH;
+    char title[128];
+    float titleX, titleY, titleW, titleH;
+    float listX, listY, listW, listH;
+    char acceptText[128];
+    float acceptX, acceptY, acceptW, acceptH;
+} modsMenu_t;
+
+#define MAX_MODS 32
+static char g_modNames[MAX_MODS][64];
+static int g_modCount = 0;
+static int g_selectedModIdx = -1;
+static int showModsPopup = 0;
+static int g_scrollOffset = 0;
+
+void ScanForMods(void) {
+    g_modCount = 0;
+    g_selectedModIdx = -1;
+    g_scrollOffset = 0;
+    
+    // Always include a default "main" (stock game) entry
+    strcpy(g_modNames[g_modCount++], "main");
+    
+    WIN32_FIND_DATAA findData;
+    HANDLE hFind = FindFirstFileA("*", &findData);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                const char *name = findData.cFileName;
+                if (strcmp(name, ".") != 0 && strcmp(name, "..") != 0 &&
+                    _stricmp(name, "main") != 0 && _stricmp(name, "pb") != 0 &&
+                    _stricmp(name, "miles") != 0 && _stricmp(name, "Docs") != 0 &&
+                    _stricmp(name, "Redist") != 0 && _stricmp(name, "PC") != 0 &&
+                    _stricmp(name, "Mac") != 0 && _stricmp(name, ".git") != 0 &&
+                    _stricmp(name, ".gemini") != 0 && _stricmp(name, "localizedstrings") != 0) {
+                    
+                    // Verify if it has any .pk3 files inside
+                    char searchPath[256];
+                    sprintf(searchPath, "%s/*.pk3", name);
+                    WIN32_FIND_DATAA pk3FindData;
+                    HANDLE hPk3Find = FindFirstFileA(searchPath, &pk3FindData);
+                    if (hPk3Find != INVALID_HANDLE_VALUE) {
+                        FindClose(hPk3Find);
+                        if (g_modCount < MAX_MODS) {
+                            strncpy(g_modNames[g_modCount++], name, 63);
+                        }
+                    }
+                }
+            }
+        } while (FindNextFileA(hFind, &findData));
+        FindClose(hFind);
+    }
+}
+
+static void LoadAndParseModsMenu(modsMenu_t *mm) {
+    mm->menuX = 141.0f; // Centered OPTIONS_WINDOW_POS: (640 - 358) / 2
+    mm->menuY = 80.0f;
+    mm->menuW = 358.0f;
+    mm->menuH = 300.0f;
+    
+    strcpy(mm->title, "@MENU_MODS");
+    mm->titleX = 165.0f;
+    mm->titleY = 10.0f;
+    mm->titleW = 64.0f;
+    mm->titleH = 14.0f;
+    
+    mm->listX = 3.0f;
+    mm->listY = 35.0f;
+    mm->listW = 351.0f;
+    mm->listH = 220.0f;
+    
+    strcpy(mm->acceptText, "@MENU_LAUNCH");
+    mm->acceptX = 130.0f;
+    mm->acceptY = 268.0f;
+    mm->acceptW = 100.0f;
+    mm->acceptH = 20.0f;
+
+    extern int FS_ReadFile(const char *qpath, void **buffer);
+    void *buffer = NULL;
+    int fileLen = FS_ReadFile("ui_mp/mods.menu", &buffer);
+    if (fileLen <= 0 || !buffer) {
+        fileLen = FS_ReadFile("ui/mods.menu", &buffer);
+    }
+    
+    if (fileLen <= 0 || !buffer) {
+        Com_Printf("WARNING: LoadAndParseModsMenu: Could not read ui_mp/mods.menu. Using defaults.\n");
+        return;
+    }
+
+    const char *ptr = (const char *)buffer;
+    char token[256];
+    
+    int inMenuDef = 0;
+    int inItemDef = 0;
+    char currentItemName[128] = "";
+    
+    char itemText[128] = "";
+    float itemRect[4] = {0};
+    
+    while (GetNextMenuToken(&ptr, token, sizeof(token))) {
+        if (_stricmp(token, "menuDef") == 0) {
+            inMenuDef = 1;
+            continue;
+        }
+        
+        if (_stricmp(token, "itemDef") == 0) {
+            inItemDef = 1;
+            currentItemName[0] = '\0';
+            itemText[0] = '\0';
+            memset(itemRect, 0, sizeof(itemRect));
+            continue;
+        }
+        
+        if (token[0] == '}') {
+            if (inItemDef) {
+                if (_stricmp(currentItemName, "window") == 0) {
+                    mm->menuW = itemRect[2];
+                    mm->menuH = itemRect[3];
+                } else if (_stricmp(currentItemName, "default") == 0) {
+                    if (itemText[0]) strcpy(mm->title, itemText);
+                    mm->titleX = itemRect[0];
+                    mm->titleY = itemRect[1];
+                    mm->titleW = itemRect[2];
+                    mm->titleH = itemRect[3];
+                } else if (_stricmp(currentItemName, "modlist") == 0) {
+                    mm->listX = itemRect[0];
+                    mm->listY = itemRect[1];
+                    mm->listW = itemRect[2];
+                    mm->listH = itemRect[3];
+                } else if (_stricmp(currentItemName, "accept") == 0) {
+                    if (itemText[0]) strcpy(mm->acceptText, itemText);
+                    mm->acceptX = itemRect[0];
+                    mm->acceptY = itemRect[1];
+                    mm->acceptW = itemRect[2];
+                    mm->acceptH = itemRect[3];
+                }
+                inItemDef = 0;
+            } else if (inMenuDef) {
+                inMenuDef = 0;
+            }
+            continue;
+        }
+        
+        if (inItemDef) {
+            if (_stricmp(token, "name") == 0) {
+                GetNextMenuToken(&ptr, currentItemName, sizeof(currentItemName));
+            } else if (_stricmp(token, "text") == 0) {
+                GetNextMenuToken(&ptr, itemText, sizeof(itemText));
+            } else if (_stricmp(token, "rect") == 0) {
+                char val[32];
+                for (int i = 0; i < 4; i++) {
+                    if (GetNextMenuToken(&ptr, val, sizeof(val))) {
+                        itemRect[i] = (float)atof(val);
+                    }
+                }
+            }
+        }
+    }
+    
+    free(buffer);
+    Com_Printf("DEBUG: Loaded and parsed ui_mp/mods.menu successfully.\n");
+}
+
 void RenderDemoFrame(void) {
     if (!g_hdc) return;
 
@@ -1218,12 +1552,20 @@ void RenderDemoFrame(void) {
     static int iwLogo = -1;
     static int initialized = 0;
     static quitMenu_t g_quitMenu;
+    static modsMenu_t g_modsMenu;
+    static stub_fontInfo_t testFont;
 
     if (!initialized) {
         backTop = RE_RegisterShader("ui_mp/assets/main_back_top_mp.tga", 0);
         backBottom = RE_RegisterShader("ui_mp/assets/main_back_bottom_mp.tga", 0);
         iwLogo = RE_RegisterShader("video/iw_logo1.tga", 0);
         LoadAndParseQuitMenu(&g_quitMenu);
+        LoadAndParseModsMenu(&g_modsMenu);
+        
+        // Trigger font registration to verify localized loading
+        extern void RE_RegisterFont(const char *fontName, int pointSize, void *font, int imageTrack);
+        RE_RegisterFont("fonts/fontImage_12", 12, &testFont, 0);
+        
         initialized = 1;
     }
 
@@ -1259,39 +1601,39 @@ void RenderDemoFrame(void) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    // Initialize Win32 hardware-accelerated OpenGL Georgia fonts
+    // Initialize Win32 hardware-accelerated OpenGL Georgia fonts (with Polish EASTEUROPE_CHARSET and extended range)
     static GLuint fontListBase = 0;
     static GLuint verFontListBase = 0;
     static GLuint popupFontListBase = 0;
     if (!fontListBase) {
-        fontListBase = glGenLists(96);
+        fontListBase = glGenLists(224);
         HFONT hFont = CreateFontA(
             -20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            ANSI_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+            EASTEUROPE_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
             ANTIALIASED_QUALITY, FF_DONTCARE | DEFAULT_PITCH, "Georgia"
         );
         SelectObject(g_hdc, hFont);
-        wglUseFontBitmaps(g_hdc, 32, 96, fontListBase);
+        wglUseFontBitmaps(g_hdc, 32, 224, fontListBase);
         DeleteObject(hFont);
 
-        verFontListBase = glGenLists(96);
+        verFontListBase = glGenLists(224);
         HFONT hVerFont = CreateFontA(
             -12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            ANSI_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+            EASTEUROPE_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
             ANTIALIASED_QUALITY, FF_DONTCARE | DEFAULT_PITCH, "Georgia"
         );
         SelectObject(g_hdc, hVerFont);
-        wglUseFontBitmaps(g_hdc, 32, 96, verFontListBase);
+        wglUseFontBitmaps(g_hdc, 32, 224, verFontListBase);
         DeleteObject(hVerFont);
 
-        popupFontListBase = glGenLists(96);
+        popupFontListBase = glGenLists(224);
         HFONT hPopupFont = CreateFontA(
             -14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            ANSI_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+            EASTEUROPE_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
             ANTIALIASED_QUALITY, FF_DONTCARE | DEFAULT_PITCH, "Georgia"
         );
         SelectObject(g_hdc, hPopupFont);
-        wglUseFontBitmaps(g_hdc, 32, 96, popupFontListBase);
+        wglUseFontBitmaps(g_hdc, 32, 224, popupFontListBase);
         DeleteObject(hPopupFont);
     }
 
@@ -1390,20 +1732,36 @@ void RenderDemoFrame(void) {
     }
 
     float btnY[] = {190, 220, 250, 280, 310, 340, 370};
-    const char *btnText[] = {
-        "Join a Game",
-        "Start New Server",
-        "Multiplayer Options",
-        "Options",
-        "Mods",
-        "Single Player",
-        "Quit"
-    };
+    
+    extern const char *SE_GetString(const char *reference, int wantTranslation);
+    
+    // Safely retrieve localized string or fallback to hardcoded English
+    const char *btnText[7];
+    const char *joinGameStr = SE_GetString("MENU_JOIN_GAME", 1);
+    btnText[0] = (joinGameStr && *joinGameStr && _strnicmp(joinGameStr, "MENU_", 5) != 0) ? joinGameStr : "Join a Game";
+    
+    const char *startServerStr = SE_GetString("MENU_START_NEW_SERVER", 1);
+    btnText[1] = (startServerStr && *startServerStr && _strnicmp(startServerStr, "MENU_", 5) != 0) ? startServerStr : "Start New Server";
+    
+    const char *mpOptionsStr = SE_GetString("MENU_MULTIPLAYER_OPTIONS", 1);
+    btnText[2] = (mpOptionsStr && *mpOptionsStr && _strnicmp(mpOptionsStr, "MENU_", 5) != 0) ? mpOptionsStr : "Multiplayer Options";
+    
+    const char *optionsStr = SE_GetString("MENU_OPTIONS", 1);
+    btnText[3] = (optionsStr && *optionsStr && _strnicmp(optionsStr, "MENU_", 5) != 0) ? optionsStr : "Options";
+    
+    const char *modsStr = SE_GetString("MENU_MODS", 1);
+    btnText[4] = (modsStr && *modsStr && _strnicmp(modsStr, "MENU_", 5) != 0) ? modsStr : "Mods";
+    
+    const char *singlePlayerStr = SE_GetString("MENU_SINGLE_PLAYER", 1);
+    btnText[5] = (singlePlayerStr && *singlePlayerStr && _strnicmp(singlePlayerStr, "MENU_", 5) != 0) ? singlePlayerStr : "Single Player";
+    
+    const char *quitStr = SE_GetString("MENU_QUIT", 1);
+    btnText[6] = (quitStr && *quitStr && _strnicmp(quitStr, "MENU_", 5) != 0) ? quitStr : "Quit";
 
     static int showQuitPopup = 0;
 
     int hoveredBtn = -1;
-    if (consoleHeight < 5.0f && !showQuitPopup) {
+    if (consoleHeight < 5.0f && !showQuitPopup && !showModsPopup) {
         for (int b = 0; b < 7; b++) {
             if (mouseX >= 385 && mouseX <= 580 && mouseY >= btnY[b] && mouseY <= btnY[b] + 20) {
                 hoveredBtn = b;
@@ -1465,7 +1823,9 @@ void RenderDemoFrame(void) {
         } else if (hoveredBtn == 3) { // Options
             Com_Printf("DEBUG: Options selected\n");
         } else if (hoveredBtn == 4) { // Mods
-            Com_Printf("DEBUG: Mods selected\n");
+            Com_Printf("DEBUG: Scanning and opening mods popup...\n");
+            ScanForMods();
+            showModsPopup = 1;
         } else if (hoveredBtn == 5) { // Single Player
             Com_Printf("DEBUG: Single player selected\n");
         } else if (hoveredBtn == 6) { // Quit
@@ -1652,6 +2012,296 @@ void RenderDemoFrame(void) {
         }
     }
 
+    // Render Mods Popup overlay in virtual 640x480 space (parsed from ui_mp/mods.menu)
+    if (showModsPopup) {
+        float menuX = g_modsMenu.menuX;
+        float menuY = g_modsMenu.menuY;
+        float menuW = g_modsMenu.menuW;
+        float menuH = g_modsMenu.menuH;
+
+        float titleX = menuX + g_modsMenu.titleX;
+        float titleY = menuY + g_modsMenu.titleY;
+        float titleW = g_modsMenu.titleW;
+        float titleH = g_modsMenu.titleH;
+
+        float listX = menuX + g_modsMenu.listX;
+        float listY = menuY + g_modsMenu.listY;
+        float listW = g_modsMenu.listW;
+        float listH = g_modsMenu.listH;
+
+        float acceptX = menuX + g_modsMenu.acceptX;
+        float acceptY = menuY + g_modsMenu.acceptY;
+        float acceptW = g_modsMenu.acceptW;
+        float acceptH = g_modsMenu.acceptH;
+
+        int visibleCount = 10;
+        float itemH = 20.0f;
+
+        int hoveredModItem = -1;
+        for (int i = 0; i < visibleCount && (i + g_scrollOffset) < g_modCount; i++) {
+            int modIdx = i + g_scrollOffset;
+            float itemY = listY + i * itemH;
+            if (mouseX >= listX && mouseX <= listX + listW - 16.0f && mouseY >= itemY && mouseY <= itemY + itemH) {
+                hoveredModItem = modIdx;
+            }
+        }
+
+        float scrollX = listX + listW - 16.0f;
+        float scrollY_up = listY + 2.0f;
+        float scrollY_down = listY + listH - 18.0f;
+        float scrollW = 14.0f;
+        float scrollH = 16.0f;
+
+        int hoveredUp = (mouseX >= scrollX && mouseX <= scrollX + scrollW && mouseY >= scrollY_up && mouseY <= scrollY_up + scrollH);
+        int hoveredDown = (mouseX >= scrollX && mouseX <= scrollX + scrollW && mouseY >= scrollY_down && mouseY <= scrollY_down + scrollH);
+
+        float trackY = scrollY_up + scrollH;
+        float trackH = scrollY_down - trackY;
+
+        float thumbH = trackH * ((float)visibleCount / g_modCount);
+        if (thumbH > trackH) thumbH = trackH;
+        if (thumbH < 15.0f) thumbH = 15.0f;
+        float thumbY = trackY + (trackH - thumbH) * ((float)g_scrollOffset / (g_modCount - visibleCount > 0 ? g_modCount - visibleCount : 1));
+        if (g_modCount <= visibleCount) {
+            thumbY = trackY;
+            thumbH = trackH;
+        }
+
+        int hoveredAccept = (mouseX >= acceptX && mouseX <= acceptX + acceptW && mouseY >= acceptY && mouseY <= acceptY + acceptH);
+
+        if (clickTriggered) {
+            if (hoveredUp && g_scrollOffset > 0) {
+                g_scrollOffset--;
+            } else if (hoveredDown && (g_scrollOffset + visibleCount) < g_modCount) {
+                g_scrollOffset++;
+            } else if (hoveredAccept && g_selectedModIdx >= 0) {
+                extern void Cbuf_AddText(const char *text);
+                char cmd[128];
+                sprintf(cmd, "fs_game %s\nvid_restart\n", g_modNames[g_selectedModIdx]);
+                Com_Printf("DEBUG: Launching mod: %s\n", g_modNames[g_selectedModIdx]);
+                Cbuf_AddText(cmd);
+                showModsPopup = 0;
+            } else if (hoveredModItem >= 0) {
+                g_selectedModIdx = hoveredModItem;
+            } else {
+                if (mouseX < menuX || mouseX > menuX + menuW || mouseY < menuY || mouseY > menuY + menuH) {
+                    showModsPopup = 0;
+                }
+            }
+        }
+
+        glDisable(GL_TEXTURE_2D);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        // 1. Draw main popmenu background panel body
+        glColor4f(0.06f, 0.06f, 0.06f, 0.90f);
+        glBegin(GL_QUADS);
+            glVertex2f(menuX, menuY);
+            glVertex2f(menuX + menuW, menuY);
+            glVertex2f(menuX + menuW, menuY + menuH);
+            glVertex2f(menuX, menuY + menuH);
+        glEnd();
+
+        // Border of the main popup card
+        glColor4f(0.5f, 0.5f, 0.5f, 0.5f);
+        glLineWidth(1.5f);
+        glBegin(GL_LINE_LOOP);
+            glVertex2f(menuX, menuY);
+            glVertex2f(menuX + menuW, menuY);
+            glVertex2f(menuX + menuW, menuY + menuH);
+            glVertex2f(menuX, menuY + menuH);
+        glEnd();
+
+        // 2. Render Header "Mods"
+        if (popupFontListBase) {
+            glListBase(popupFontListBase - 32);
+            const char *titleStr = SE_GetString(g_modsMenu.title, 1);
+            if (!titleStr || !*titleStr || _strnicmp(titleStr, "MENU_", 5) == 0) titleStr = "Mods";
+            float tw = GetStringWidth(titleStr, 1.0f);
+            float tx = titleX + (titleW / 2.0f) - (tw / 2.0f);
+            float ty = titleY + 12.0f;
+
+            // Shadow
+            glColor3f(0.0f, 0.0f, 0.0f);
+            glRasterPos2f(tx + 1.0f, ty + 1.0f);
+            glCallLists(strlen(titleStr), GL_UNSIGNED_BYTE, titleStr);
+
+            // Foreground
+            glColor3f(0.9f, 0.9f, 0.9f);
+            glRasterPos2f(tx, ty);
+            glCallLists(strlen(titleStr), GL_UNSIGNED_BYTE, titleStr);
+        }
+
+        // 3. Draw Mod list background box (subtle blue tint)
+        glColor4f(0.05f, 0.05f, 0.5f, 0.15f);
+        glBegin(GL_QUADS);
+            glVertex2f(listX, listY);
+            glVertex2f(listX + listW, listY);
+            glVertex2f(listX + listW, listY + listH);
+            glVertex2f(listX, listY + listH);
+        glEnd();
+
+        glColor4f(0.5f, 0.5f, 0.5f, 0.5f);
+        glLineWidth(1.0f);
+        glBegin(GL_LINE_LOOP);
+            glVertex2f(listX, listY);
+            glVertex2f(listX + listW, listY);
+            glVertex2f(listX + listW, listY + listH);
+            glVertex2f(listX, listY + listH);
+        glEnd();
+
+        // 4. Render Mod List items
+        for (int i = 0; i < visibleCount && (i + g_scrollOffset) < g_modCount; i++) {
+            int modIdx = i + g_scrollOffset;
+            float itemY = listY + i * itemH;
+
+            // Draw highlight for selected/hovered items
+            if (g_selectedModIdx == modIdx) {
+                glColor4f(0.25f, 0.45f, 0.15f, 0.40f); // Solid green selection bar
+                glBegin(GL_QUADS);
+                    glVertex2f(listX + 2, itemY + 1);
+                    glVertex2f(listX + listW - 18, itemY + 1);
+                    glVertex2f(listX + listW - 18, itemY + itemH - 1);
+                    glVertex2f(listX + 2, itemY + itemH - 1);
+                glEnd();
+            } else if (hoveredModItem == modIdx) {
+                glColor4f(0.25f, 0.45f, 0.15f, 0.20f); // Olive outline highlight for hover
+                glBegin(GL_QUADS);
+                    glVertex2f(listX + 2, itemY + 1);
+                    glVertex2f(listX + listW - 18, itemY + 1);
+                    glVertex2f(listX + listW - 18, itemY + itemH - 1);
+                    glVertex2f(listX + 2, itemY + itemH - 1);
+                glEnd();
+            }
+
+            // Draw Mod Name string
+            if (popupFontListBase) {
+                glListBase(popupFontListBase - 32);
+                const char *modName = g_modNames[modIdx];
+                float textX = listX + 8.0f;
+                float textY = itemY + 14.0f;
+
+                // Shadow
+                glColor3f(0.0f, 0.0f, 0.0f);
+                glRasterPos2f(textX + 1.0f, textY + 1.0f);
+                glCallLists(strlen(modName), GL_UNSIGNED_BYTE, modName);
+
+                // Foreground
+                if (g_selectedModIdx == modIdx) {
+                    glColor3f(0.95f, 0.82f, 0.45f); // Gold text
+                } else if (hoveredModItem == modIdx) {
+                    glColor3f(0.92f, 0.92f, 0.92f); // White on hover
+                } else {
+                    glColor3f(0.80f, 0.80f, 0.80f); // Soft grey normally
+                }
+                glRasterPos2f(textX, textY);
+                glCallLists(strlen(modName), GL_UNSIGNED_BYTE, modName);
+            }
+        }
+
+        // 5. Draw Scrollbar track separator
+        glColor4f(0.5f, 0.5f, 0.5f, 0.5f);
+        glLineWidth(1.0f);
+        glBegin(GL_LINES);
+            glVertex2f(scrollX, listY);
+            glVertex2f(scrollX, listY + listH);
+        glEnd();
+
+        // 6. Draw Scrollbar Up/Down arrows (gray triangles)
+        // Up Arrow
+        if (hoveredUp) {
+            glColor4f(0.8f, 0.8f, 0.8f, 1.0f);
+        } else {
+            glColor4f(0.5f, 0.5f, 0.5f, 1.0f);
+        }
+        glBegin(GL_TRIANGLES);
+            glVertex2f(scrollX + 7.0f, scrollY_up + 3.0f);
+            glVertex2f(scrollX + 2.0f, scrollY_up + 13.0f);
+            glVertex2f(scrollX + 12.0f, scrollY_up + 13.0f);
+        glEnd();
+
+        // Down Arrow
+        if (hoveredDown) {
+            glColor4f(0.8f, 0.8f, 0.8f, 1.0f);
+        } else {
+            glColor4f(0.5f, 0.5f, 0.5f, 1.0f);
+        }
+        glBegin(GL_TRIANGLES);
+            glVertex2f(scrollX + 7.0f, scrollY_down + 13.0f);
+            glVertex2f(scrollX + 2.0f, scrollY_down + 3.0f);
+            glVertex2f(scrollX + 12.0f, scrollY_down + 3.0f);
+        glEnd();
+
+        // 7. Draw Scrollbar thumb
+        glColor4f(0.35f, 0.35f, 0.35f, 0.90f);
+        glBegin(GL_QUADS);
+            glVertex2f(scrollX + 2.0f, thumbY);
+            glVertex2f(scrollX + 12.0f, thumbY);
+            glVertex2f(scrollX + 12.0f, thumbY + thumbH);
+            glVertex2f(scrollX + 2.0f, thumbY + thumbH);
+        glEnd();
+
+        glColor4f(0.5f, 0.5f, 0.5f, 0.80f);
+        glBegin(GL_LINE_LOOP);
+            glVertex2f(scrollX + 2.0f, thumbY);
+            glVertex2f(scrollX + 12.0f, thumbY);
+            glVertex2f(scrollX + 12.0f, thumbY + thumbH);
+            glVertex2f(scrollX + 2.0f, thumbY + thumbH);
+        glEnd();
+
+        // 8. Render "Launch" Button
+        if (hoveredAccept) {
+            glColor4f(0.24f, 0.20f, 0.10f, 0.90f); // Slate-gold background on hover
+        } else {
+            glColor4f(0.18f, 0.20f, 0.25f, 0.90f); // Slate dark grey
+        }
+        glBegin(GL_QUADS);
+            glVertex2f(acceptX, acceptY);
+            glVertex2f(acceptX + acceptW, acceptY);
+            glVertex2f(acceptX + acceptW, acceptY + acceptH);
+            glVertex2f(acceptX, acceptY + acceptH);
+        glEnd();
+
+        // Border of Launch button
+        if (hoveredAccept) {
+            glColor4f(0.55f, 0.45f, 0.20f, 0.90f);
+        } else {
+            glColor4f(0.35f, 0.35f, 0.35f, 0.80f);
+        }
+        glLineWidth(1.0f);
+        glBegin(GL_LINE_LOOP);
+            glVertex2f(acceptX, acceptY);
+            glVertex2f(acceptX + acceptW, acceptY);
+            glVertex2f(acceptX + acceptW, acceptY + acceptH);
+            glVertex2f(acceptX, acceptY + acceptH);
+        glEnd();
+
+        // Launch Text
+        if (popupFontListBase) {
+            glListBase(popupFontListBase - 32);
+            const char *launchStr = SE_GetString(g_modsMenu.acceptText, 1);
+            if (!launchStr || !*launchStr || _strnicmp(launchStr, "MENU_", 5) == 0) launchStr = "Launch";
+            float textW = GetStringWidth(launchStr, 1.0f);
+            float textX = acceptX + (acceptW / 2.0f) - (textW / 2.0f);
+            float textY = acceptY + 14.0f; // Beautiful vertical alignment inside 20px button
+
+            // Shadow
+            glColor3f(0.0f, 0.0f, 0.0f);
+            glRasterPos2f(textX + 1.0f, textY + 1.0f);
+            glCallLists(strlen(launchStr), GL_UNSIGNED_BYTE, launchStr);
+
+            // Foreground
+            if (hoveredAccept) {
+                glColor3f(0.95f, 0.82f, 0.45f);
+            } else {
+                glColor3f(0.85f, 0.85f, 0.85f);
+            }
+            glRasterPos2f(textX, textY);
+            glCallLists(strlen(launchStr), GL_UNSIGNED_BYTE, launchStr);
+        }
+    }
+
     glMatrixMode(GL_PROJECTION);
     glPopMatrix();
     glMatrixMode(GL_MODELVIEW);
@@ -1688,17 +2338,17 @@ void RenderDemoFrame(void) {
             glVertex2f(640, consoleHeight);
         glEnd();
 
-        // Initialize and bind the Consolas font
+        // Initialize and bind the Consolas font (with Polish EASTEUROPE_CHARSET and extended range)
         static GLuint consoleFontListBase = 0;
         if (!consoleFontListBase) {
-            consoleFontListBase = glGenLists(96);
+            consoleFontListBase = glGenLists(224);
             HFONT hFont = CreateFontA(
                 -12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                ANSI_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                EASTEUROPE_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
                 ANTIALIASED_QUALITY, FF_DONTCARE | FIXED_PITCH, "Consolas"
             );
             SelectObject(g_hdc, hFont);
-            wglUseFontBitmaps(g_hdc, 32, 96, consoleFontListBase);
+            wglUseFontBitmaps(g_hdc, 32, 224, consoleFontListBase);
             DeleteObject(hFont);
         }
 
@@ -1761,6 +2411,11 @@ void RenderDemoFrame(void) {
 }
 
 LRESULT CALLBACK CoD1_WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_CLOSE) {
+        extern void Sys_Quit(void);
+        Sys_Quit();
+        return 0;
+    }
     if (msg == WM_MOUSEWHEEL) {
         if (consoleVisible) {
             short zDelta = (short)HIWORD(wParam);

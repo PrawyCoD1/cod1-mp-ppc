@@ -245,5 +245,24 @@ int RE_RegisterShader(const char *a1, int a2)
       return idx;
   }
 
-  return 0;
+  // Fallback 2x2 white texture to prevent infinite scanning and caching failures for DDS
+  width = 2;
+  height = 2;
+  unsigned int fallbackPixels[4] = { 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF };
+  
+  GLuint tex;
+  glGenTextures(1, &tex);
+  glBindTexture(GL_TEXTURE_2D, tex);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, fallbackPixels);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+  int idx = g_shaderMapCount++;
+  strcpy(g_shaderMap[idx].name, a1);
+  g_shaderMap[idx].textureId = tex;
+  g_shaderMap[idx].width = width;
+  g_shaderMap[idx].height = height;
+  
+  Com_Printf("WARNING: RE_RegisterShader failed to load '%s', using fallback texture (idx: %d)\n", a1, idx);
+  return idx;
 }

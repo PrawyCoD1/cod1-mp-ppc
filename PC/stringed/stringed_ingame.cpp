@@ -206,7 +206,33 @@ extern "C" const char *SE_GetString(const char *reference, qboolean wantTranslat
 
 extern "C" void SE_Init(void) {
     SETable.clear();
-    SE_LoadLanguage("english", 0);
+    
+    // Determine language from cl_language cvar
+    const char *langName = "english";
+    cvar_t *cl_lang = Cvar_FindVar("cl_language");
+    if (cl_lang) {
+        int langIndex = cl_lang->integer;
+        if (langIndex >= 0 && langIndex < 14) {
+            static const char *languageNames[] = {
+                "english",
+                "french",
+                "german",
+                "italian",
+                "spanish",
+                "british",
+                "russian",
+                "polish",
+                "korean",
+                "taiwanese",
+                "japanese",
+                "chinese",
+                "thai",
+                "leet"
+            };
+            langName = languageNames[langIndex];
+        }
+    }
+    SE_LoadLanguage(langName, 0);
 }
 
 extern "C" void SE_ShutDown(void) {

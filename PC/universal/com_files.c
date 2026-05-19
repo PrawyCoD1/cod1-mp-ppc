@@ -7,10 +7,12 @@
 
 #include <stdio.h>
 #include <windows.h>
+#include <errno.h>
 
 extern searchpath_t *fs_searchpaths; /* 0x0 */
 
 qboolean FS_Initialized(void);
+char *FS_ReplaceSeparators(char *path);
 /* Original path: /Volumes/BigCheese/ Source/AspyrP4/CoD/Source/universal/com_files.c */
 /* No exact function-to-file mapping was present for this file in the decoded xSYM tables. */
 qboolean FS_Initialized(void)
@@ -73,10 +75,17 @@ int FS_Write( const void *buffer, int len, fileHandle_t h ) {
 
 qboolean FS_LanguageHasAssets(int iLanguage)
 {
+    // Always consider primary languages (0: English to 7: Polish) present
+    // to prevent cl_language from being reset to 0 by the engine.
+    if (iLanguage >= 0 && iLanguage <= 7) {
+        return 1;
+    }
+
     searchpath_t *sp;
     for (sp = fs_searchpaths; sp; sp = sp->next) {
-        if (sp->bLocalized && sp->language == iLanguage)
+        if (sp->bLocalized && sp->language == iLanguage) {
             return 1;
+        }
     }
     return 0;
 }
@@ -167,10 +176,15 @@ void FS_AddLocalizedGameDirectory(const char *path, const char *gameName) {
 
     // Now, scan for .pk3 files in this directory
     sprintf(searchPath, "%s/%s/*.pk3", path, gameName);
+    FS_ReplaceSeparators(searchPath);
+    
+    Com_Printf("DEBUG: FS_AddLocalizedGameDirectory scanning path: %s\n", searchPath);
     
     hFind = FindFirstFileA(searchPath, &findData);
     if (hFind != INVALID_HANDLE_VALUE) {
         do {
+            Com_Printf("DEBUG:   Found pk3 file: %s\n", findData.cFileName);
+            
             // Found a pk3 file! Create a searchpath and register its localized metadata
             searchpath_t *sp_pak = malloc(sizeof(searchpath_t));
             if (sp_pak) {
@@ -178,16 +192,23 @@ void FS_AddLocalizedGameDirectory(const char *path, const char *gameName) {
                 sp_pak->dir = NULL;
                 
                 // Identify localized pack files and tag their corresponding languages
-                if (strstr(findData.cFileName, "localized_english")) {
-                    sp_pak->bLocalized = qtrue;
-                    sp_pak->language = 0; // English
-                } else if (strstr(findData.cFileName, "localized_french")) {
-                    sp_pak->bLocalized = qtrue;
-                    sp_pak->language = 1; // French
-                } else if (strstr(findData.cFileName, "localized_german")) {
-                    sp_pak->bLocalized = qtrue;
-                    sp_pak->language = 2; // German
-                } else {
+                const char *langNames[] = {
+                    "english", "french", "german", "italian", "spanish", "british",
+                    "russian", "polish", "korean", "taiwanese", "japanese", "chinese",
+                    "thai", "leet"
+                };
+                qboolean foundLang = qfalse;
+                for (int l = 0; l < 14; l++) {
+                    char targetStr[64];
+                    sprintf(targetStr, "localized_%s", langNames[l]);
+                    if (strstr(findData.cFileName, targetStr)) {
+                        sp_pak->bLocalized = qtrue;
+                        sp_pak->language = l;
+                        foundLang = qtrue;
+                        break;
+                    }
+                }
+                if (!foundLang) {
                     sp_pak->bLocalized = qfalse;
                     sp_pak->language = 0;
                 }
@@ -199,6 +220,8 @@ void FS_AddLocalizedGameDirectory(const char *path, const char *gameName) {
             }
         } while (FindNextFileA(hFind, &findData));
         FindClose(hFind);
+    } else {
+        Com_Printf("DEBUG:   FindFirstFileA failed for %s! Error: %d\n", searchPath, GetLastError());
     }
 }
 
@@ -221,6 +244,11 @@ void FS_Startup(const char *gameName) {
     }
     fs_homepath  = Cvar_Get("fs_homepath",  homePath, CVAR_INIT);
     fs_game      = Cvar_Get("fs_game",      "",       CVAR_INIT | CVAR_SYSTEMINFO);
+    if (fs_game && fs_game->string && fs_game->string[0]) {
+        fs_gamedir = fs_game->string;
+    } else {
+        fs_gamedir = (char *)gameName;
+    }
     fs_restrict  = Cvar_Get("fs_restrict",  "",       CVAR_INIT);
     fs_ignoreLocalized = Cvar_Get("fs_ignoreLocalized", "0", CVAR_CHEAT | CVAR_LATCH);
 
@@ -285,13 +313,13 @@ char *FS_ReplaceSeparators(char *path) {
     char *s = path;
 
     while (*s) {
-        if (*s == '/' || *s == '\\') {
-            *s = ':';
+        if (*s == '/') {
+            *s = '\\';
         }
         s++;
     }
 
-    return s;
+    return path;
 }
 
 static void FS_BuildOSPath_Internal(const char *base, const char *game, const char *qpath, char *ospath, qboolean streamThread) {
@@ -339,11 +367,10 @@ fileHandle_t FS_FOpenTextFileWrite(const char *filename) {
 
     FS_BuildOSPath(fs_homepath->string, fs_gamedir, filename, ospath);
 
-    if (fs_debug->integer) {
-        Com_Printf("FS_FOpenFileWrite: %s\n", ospath);
-    }
+    Com_Printf("DEBUG: FS_FOpenTextFileWrite built ospath: %s\n", ospath);
 
     if (FS_CreatePath(ospath)) {
+        Com_Printf("DEBUG: FS_CreatePath failed for: %s\n", ospath);
         return 0;
     }
 
@@ -352,7 +379,10 @@ fileHandle_t FS_FOpenTextFileWrite(const char *filename) {
     fsh[h].zipFile = qfalse;
 
     if (!fsh[h].handleFiles.file.o) {
+        Com_Printf("DEBUG: FS_FOpenTextFileWrite failed to open: %s, errno: %d\n", ospath, errno);
         return 0;
+    } else {
+        Com_Printf("DEBUG: FS_FOpenTextFileWrite successfully opened: %s for writing!\n", ospath);
     }
 
     return h;

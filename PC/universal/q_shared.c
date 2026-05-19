@@ -106,7 +106,7 @@ extern void Com_StartupVariable(const char *var);
 extern void SEH_InitLanguage(void);
 extern void FS_Startup(const char *path);
 extern void SEH_Init_StringEd(int *val, int val2);
-extern void SEH_UpdateLanguageInfo(void);
+extern int SEH_UpdateLanguageInfo(void);
 extern void FS_SetRestrictions(void);
 extern int FS_ReadFile(const char *qpath, void **buffer);
 
@@ -123,9 +123,16 @@ char *FS_InitFilesystem(void)
     Com_StartupVariable("fs_usewolf");
     Com_StartupVariable("cl_language");
     
-    SEH_InitLanguage();
     FS_Startup("main");
     Com_Printf("DEBUG: FS_Startup main completed successfully.\n");
+
+    // Execute config files early so startup cvars (like cl_language) are loaded from disk!
+    Cbuf_AddText("exec default_mp.cfg\n");
+    Cbuf_AddText("exec language.cfg\n");
+    Cbuf_AddText("exec config_mp.cfg\n");
+    Cbuf_Execute();
+    
+    SEH_InitLanguage();
     
     Com_Printf("DEBUG: Calling SEH_Init_StringEd...\n");
     SEH_Init_StringEd(&dword_1407450, 0);
